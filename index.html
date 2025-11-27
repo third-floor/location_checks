@@ -2,28 +2,29 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Leaflet + OpenCage Demo</title>
+<title>Leaflet Map + Nominatim Search + CSV Places</title>
 
 <!-- Leaflet CSS -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 
-<!-- OpenCage Geosearch CSS -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@opencage/geosearch-bundle@1.0.0/dist/css/oc-geosearch.css"/>
+<!-- Leaflet Control Geocoder CSS (Nominatim) -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css" />
 
 <style>
   body { font-family: Arial, sans-serif; margin: 0; }
-  #map { height: 70vh; width: 100%; }
-  #table-container { padding: 10px; }
-  table { border-collapse: collapse; width: 100%; margin-top: 10px; }
-  table, th, td { border: 1px solid #ccc; }
-  th, td { padding: 6px; text-align: left; }
-  tr:hover { background-color: #f0f0f0; cursor: pointer; }
+  #map { height: 65vh; width: 100%; }
   #distanceOutput { padding: 10px; font-size: 1.1em; }
+  #table-container { padding: 15px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+  th, td { border: 1px solid #ccc; padding: 6px; }
+  tr:hover { background-color: #eef; cursor: pointer; }
+  #tableSearch { width: 100%; padding: 6px; margin-bottom: 10px; }
 </style>
 </head>
 
 <body>
-<h2 style="padding:10px">Leaflet Map + OpenCage Search + CSV Place Table</h2>
+
+<h2 style="padding:10px">Leaflet Map + Nominatim Search + Places Table</h2>
 
 <div id="map"></div>
 
@@ -31,157 +32,170 @@
 
 <div id="table-container">
   <h3>Places</h3>
-  <input id="tableSearch" type="text" placeholder="Search table…" style="width:100%; padding:5px;">
+  <input id="tableSearch" placeholder="Search table…" />
   <table id="placesTable">
     <thead>
       <tr>
-        <th>Place</th>
+        <th>Preferred Term</th>
         <th>Latitude</th>
         <th>Longitude</th>
+        <th>Reconcile</th>
+        <th>PLACE.MPLAC_ID</th>
+        <th>TGN_ID</th>
       </tr>
     </thead>
     <tbody></tbody>
   </table>
 </div>
 
-<!-- Leaflet JS -->
+<!-- JS Libraries -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
 <!-- PapaParse (CSV parser) -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 
-<!-- OpenCage Geosearch JS -->
-<script src="https://cdn.jsdelivr.net/npm/@opencage/geosearch-bundle@1.0.0/dist/js/oc-geosearch-bundle.min.js"></script>
+<!-- Leaflet Control Geocoder (Nominatim search) -->
+<script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
 
 <script>
-// ----------------------------
-// 1. Initialize the Leaflet Map
-// ----------------------------
+
+// =======================================================
+// 1. Initialize Leaflet Map
+// =======================================================
 const map = L.map('map').setView([20, 0], 2);
 
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19
 }).addTo(map);
 
-let tablePlaces = [];
+let tableData = [];
 let selectedPlace = null;
-let tableMarkers = [];
+let tableMarker = null;
 let searchMarker = null;
 
-// ------------------------------------------
-// 2. Add OpenCage Geosearch to the Leaflet map
-// ------------------------------------------
-const geosearch = opencage.geosearch({
-    key: "YOUR-OPENCAGE-API-KEY",   // <-- INSERT YOUR KEY
-    language: "en",
-    limit: 5
-});
 
-geosearch.on('select', function (result) {
-    const { geometry } = result;
-    const lat = geometry.lat;
-    const lng = geometry.lng;
+// =======================================================
+// 2. FREE Nominatim Geocoder Search Box (no API key)
+// =======================================================
+const geocoder = L.Control.geocoder({
+    defaultMarkGeocode: false
+})
+.on('markgeocode', function(e) {
+    const latlng = e.geocode.center;
 
-    // Remove existing search marker
     if (searchMarker) map.removeLayer(searchMarker);
 
-    searchMarker = L.marker([lat, lng], {color: "red"}).addTo(map)
-        .bindPopup("Searched Location<br>" + result.formatted)
+    searchMarker = L.marker(latlng).addTo(map)
+        .bindPopup(e.geocode.name)
         .openPopup();
-    
-    map.setView([lat, lng], 8);
 
-    // compute distance if a place is selected
+    map.setView(latlng, 10);
+
     if (selectedPlace) {
-        const distanceKm = computeDistance(selectedPlace.lat, selectedPlace.lng, lat, lng);
+        const km = haversine(selectedPlace.lat, selectedPlace.lng, latlng.lat, latlng.lng);
+
         document.getElementById("distanceOutput").innerHTML =
-            `Distance from <b>${selectedPlace.name}</b> to <b>${result.formatted}</b>: 
-             <b>${distanceKm.toFixed(2)} km</b>`;
+            `Distance from <b>${selectedPlace.name}</b> to <b>${e.geocode.name}</b>: 
+             <b>${km.toFixed(2)} km</b>`;
     }
-});
+})
+.addTo(map);
 
-// Add search box to map
-map.addControl(geosearch);
 
-// --------------------------------------------------
-// 3. Load CSV (places.csv must be in your repo root)
-// --------------------------------------------------
+// =======================================================
+// 3. Load CSV (places.csv must be in GitHub repo root)
+// =======================================================
 Papa.parse("places.csv", {
     download: true,
     header: true,
-    complete: function(results) {
-        tablePlaces = results.data;
-        populateTable(tablePlaces);
+    dynamicTyping: true,
+    complete: (results) => {
+        tableData = results.data.filter(r =>
+            r["Preferred Term"] &&
+            r.Latitude &&
+            r.Longitude
+        );
+        populateTable(tableData);
     }
 });
 
-// ----------------------------
-// 4. Populate HTML Table
-// ----------------------------
+
+// =======================================================
+// 4. Populate Table
+// =======================================================
 function populateTable(data) {
     const tbody = document.querySelector("#placesTable tbody");
     tbody.innerHTML = "";
 
-    data.forEach((row, index) => {
-        if (!row["PLACE.PLACE1"] || !row.Latitude || !row.Longitude) return;
-
+    data.forEach(row => {
         const tr = document.createElement("tr");
+
         tr.innerHTML = `
-            <td>${row["PLACE.PLACE1"]}</td>
-            <td>${row.Latitude}</td>
-            <td>${row.Longitude}</td>
+          <td>${row["Preferred Term"]}</td>
+          <td>${row.Latitude}</td>
+          <td>${row.Longitude}</td>
+          <td>${row.Reconcile ?? ""}</td>
+          <td>${row["PLACE.MPLAC_ID"] ?? ""}</td>
+          <td>${row["TGN_ID"] ?? ""}</td>
         `;
 
+        // If row is clicked
         tr.addEventListener("click", () => {
             const lat = parseFloat(row.Latitude);
             const lng = parseFloat(row.Longitude);
-            selectedPlace = { name: row["PLACE.PLACE1"], lat, lng };
+
+            selectedPlace = {
+                name: row["Preferred Term"],
+                lat, lng
+            };
+
+            if (tableMarker) map.removeLayer(tableMarker);
+
+            tableMarker = L.marker([lat, lng]).addTo(map)
+                .bindPopup(row["Preferred Term"])
+                .openPopup();
 
             map.setView([lat, lng], 8);
 
-            // Remove previous table markers
-            tableMarkers.forEach(m => map.removeLayer(m));
-            tableMarkers = [];
-
-            const marker = L.marker([lat, lng]).addTo(map)
-                .bindPopup(row["PLACE.PLACE1"])
-                .openPopup();
-
-            tableMarkers.push(marker);
-
             document.getElementById("distanceOutput").innerHTML =
-                `Selected place: <b>${row["PLACE.PLACE1"]}</b>`;
+                `Selected: <b>${row["Preferred Term"]}</b>`;
         });
 
         tbody.appendChild(tr);
     });
 }
 
-// ---------------------------------------------
-// 5. Search/filter table
-// ---------------------------------------------
-document.getElementById("tableSearch").addEventListener("keyup", function() {
+
+// =======================================================
+// 5. Table Search Filter
+// =======================================================
+document.getElementById("tableSearch").addEventListener("input", function () {
     const term = this.value.toLowerCase();
-    const filtered = tablePlaces.filter(row =>
-        row["PLACE.PLACE1"] &&
-        row["PLACE.PLACE1"].toLowerCase().includes(term)
+    const filtered = tableData.filter(r =>
+        r["Preferred Term"] &&
+        r["Preferred Term"].toLowerCase().includes(term)
     );
     populateTable(filtered);
 });
 
-// ---------------------------------------------
-// 6. Haversine distance function (km)
-// ---------------------------------------------
-function computeDistance(lat1, lon1, lat2, lon2) {
-    function toRad(x) { return x * Math.PI / 180; }
+
+// =======================================================
+// 6. Haversine Distance Calculation (km)
+// =======================================================
+function haversine(lat1, lon1, lat2, lon2) {
     const R = 6371;
+    const toRad = x => x * Math.PI / 180;
+
     const dLat = toRad(lat2 - lat1);
     const dLon = toRad(lon2 - lon1);
+
     const a = Math.sin(dLat/2)**2 +
               Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
               Math.sin(dLon/2)**2;
+
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
+
 </script>
 
 </body>
